@@ -37,8 +37,9 @@ class Encoder(nn.Module):
         
 def sampling(latent_mean, latent_log_var):
     epilson = torch.randn_like(latent_mean, device=device)
-    std = torch.exp(0.5 * latent_log_var)
-    return latent_mean + std * epilson
+    latent_std = torch.exp(0.5 * latent_log_var)
+    sampled_z = latent_mean + latent_std * epilson
+    return sampled_z, latent_std, latent_mean
         
 
 class Decoder(nn.Module):
@@ -58,26 +59,27 @@ class Decoder(nn.Module):
         )   
         
     def forward(self, z: torch.Tensor):
-        print(z.shape)
         z = self.latent_proj(z)
-        print(z.shape)
         z = z.contiguous().view(-1, 64, 23, 23) # precomputed
         z = self.decoder_block(z)
         return z
         
 
 class VariationalAutoEncoder(nn.Module):
-    def __init__(self, encoder: Encoder, decoder: Decoder):
+    def __init__(self,latent_dim:int, kl_div_beta: float):
         super().__init__()
-        self.encoder = encoder
-        self. decoder = decoder 
+        self.encoder = Encoder(latent_dim=latent_dim)
+        self. decoder = Decoder(latent_dim=latent_dim)
+        self.kl_div_beta = kl_div_beta
     
-    def forward(self, x, original_x):
+    def forward(self, x):
+        original_x = x
         latent_mean, latent_log_var = self.encoder(x)
-        z = sampling(latent_mean, latent_log_var)
-        z = self.decoder(z)
-        z_flatten = torch.flatten(z)
-        original_x_flatten = torch.flattent(original_x)
-        loss = F.binary_cross_entropy(z_flatten, original_x_flatten)
-        
-        return z, loss
+        z_sampled, latent_std, latent_mean = sampling(latent_mean, latent_log_var)
+        reconstructed_x = self.decoder(z_sampled)
+        assert original_x.shape != reconstructed_x, "shape mismatch between orginal vs reconstructed images"
+        reconstruction_loss = F.binary_cross_entropy(reconstructed_x, original_x, reduction='sum')
+        kl_div_loss = - torch.sum(1+ torch.log(latent_std) - torch.pow(latent_mean, 2) - torch.pow(latent_std, 2))
+        loss = reconstruction_loss + self.kl_div_beta * kl_div_loss
+        reconstructed_x = reconstructed_x.view(-1, 3, 96, 96)        
+        return reconstructed_x, loss
