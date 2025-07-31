@@ -27,7 +27,7 @@ class Encoder(nn.Module):
         self.latent_mean = nn.Linear(self.infeature_latent, self.latent_dim)
         self.latent_log_var = nn.Linear(self.infeature_latent, self.latent_dim)
         
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         x = self.encoder_block(x)
         latent_mean = self.latent_mean(x)
         latent_log_var = self.latent_log_var(x)
