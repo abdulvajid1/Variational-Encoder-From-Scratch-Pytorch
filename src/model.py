@@ -1,65 +1,83 @@
 import torch.nn as nn
 import torch
 from typing import Annotated,Tuple
+import torch.nn.functional as F
 
-device = torch.device('cuda' if torch.cuda.isavailable() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Device set to {device}")
 
 class Encoder(nn.Module):
-    def __init__(self, batch_size: int,
-                 image_size:Annotated[int, "the image should be same width and height"],
-                 latent_space:int):
+    def __init__(self, latent_dim: int):
         super().__init__()
-        self.batch_size = batch_size
-        self.image_size = image_size 
-        self.latent_space = latent_space
-        self.image_size = (self.image_size - 2) / 4 # After convolution
         
-        # last channel size * height * width
-        self.ln_infeature = int(64 * image_size * image_size)
-
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=(3,3), stride=2)
-        self.batch_norm1 = nn.BatchNorm2d(32)
-        self.conv2 = nn.Conv2d(32, 62, kernel_size=(3,3), stride=2)
-        self.batch_norm2 = nn.BatchNorm2d(62)
+        self.latent_dim = latent_dim
         
-        # (b, channel, height, width)
-        self.flatten = nn.Flatten(start_dim=1)
-        self.relu = nn.LeakyReLU()
+        self.encoder_block = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(),
+            nn.Flatten(start_dim=1)
+        )
         
-        self.latent_mean = nn.Linear(self.ln_infeature, out_features=self.latent_space)
-        self.latent_log_var = nn.Linear(self.ln_infeature, out_features=self.latent_space)
+        self.infeature_latent = 33856 # precomputed before
+        
+        self.latent_mean = nn.Linear(self.infeature_latent, self.latent_dim)
+        self.latent_log_var = nn.Linear(self.infeature_latent, self.latent_dim)
         
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.batch_norm1(x)
-        x = self.relu(x)
-        x = self.conv2(x)
-        x = self.batch_norm2(x)
-        x = self.relu(x)
-        x = self.flatten(x)
+        x = self.encoder_block(x)
         latent_mean = self.latent_mean(x)
         latent_log_var = self.latent_log_var(x)
-        sampling(latent_mean, latent_log_var)
-        
         return latent_mean, latent_log_var
+    
+    
         
 def sampling(latent_mean, latent_log_var):
-    batch = latent_mean.shape[0]
-    dim = latent_mean.shape[1]
-    epilson = torch.randn(size=(batch, dim), device=device)
+    epilson = torch.randn_like(latent_mean, device=device)
     std = torch.exp(0.5 * latent_log_var)
     return latent_mean + std * epilson
         
 
 class Decoder(nn.Module):
-    def __init__(self):
+    def __init__(self, latent_dim:int):
         super().__init__()
-        self.conv_transpose_1 = nn.ConvTranspose2d(62, 32, kernel_size=(3,3), stride=2)
-        self.conv_transpose_2 = nn.ConvTranspose2d(32, 3, kernel_size=(3,3), stride=2)
+        
+        self.latent_dim = latent_dim
+        self.latent_proj_dim = 33856
+        self.latent_proj = nn.Linear(in_features=self.latent_dim, out_features=self.latent_proj_dim)
+        
+        self.decoder_block = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, kernel_size=(3,3), stride=2),
+            nn.BatchNorm2d(32),
+            nn.LeakyReLU(),
+            nn.ConvTranspose2d(32, 3, kernel_size=(3,3), stride=2, output_padding=1),
+            nn.Sigmoid()
+        )   
+        
+    def forward(self, z: torch.Tensor):
+        print(z.shape)
+        z = self.latent_proj(z)
+        print(z.shape)
+        z = z.contiguous().view(-1, 64, 23, 23) # precomputed
+        z = self.decoder_block(z)
+        return z
         
 
 class VariationalAutoEncoder(nn.Module):
-    pass
+    def __init__(self, encoder: Encoder, decoder: Decoder):
+        super().__init__()
+        self.encoder = encoder
+        self. decoder = decoder 
     
-    
+    def forward(self, x, original_x):
+        latent_mean, latent_log_var = self.encoder(x)
+        z = sampling(latent_mean, latent_log_var)
+        z = self.decoder(z)
+        z_flatten = torch.flatten(z)
+        original_x_flatten = torch.flattent(original_x)
+        loss = F.binary_cross_entropy(z_flatten, original_x_flatten)
+        
+        return z, loss
